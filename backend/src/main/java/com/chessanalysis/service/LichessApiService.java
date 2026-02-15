@@ -1,18 +1,13 @@
 package com.chessanalysis.service;
 
 import com.chessanalysis.model.Game;
-import com.chessanalysis.model.User;
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
-import org.springframework.web.client.RestTemplate;
+import org.springframework.web.reactive.function.client.WebClient;
+import reactor.core.publisher.Flux;
 
-import java.time.Instant;
-import java.time.LocalDateTime;
-import java.time.ZoneId;
-import java.util.ArrayList;
+import java.time.Duration;
 import java.util.List;
 
 @Service
@@ -22,105 +17,87 @@ public class LichessApiService {
     @Value("${lichess.api.url}")
     private String lichessApiUrl;
 
-    private final RestTemplate restTemplate;
-    private final ObjectMapper objectMapper;
+    private final WebClient webClient;
 
-    public LichessApiService(RestTemplate restTemplate) {
-        this.restTemplate = restTemplate;
-        this.objectMapper = new ObjectMapper();
+    public LichessApiService(WebClient.Builder webClientBuilder) {
+        this.webClient = webClientBuilder
+                .baseUrl(lichessApiUrl)
+                .build();
     }
 
-    public List<Game> fetchGames(User user, int count) {
-        List<Game> games = new ArrayList<>();
-        
-        try {
-            String url = String.format("%s/games/user/%s?max=%d&pgnInJson=true&opening=true&clocks=true",
-                    lichessApiUrl, user.getLichessUsername(), count);
-            
-            log.info("Fetching games from Lichess: {}", url);
-            
-            String response = restTemplate.getForObject(url, String.class);
-            
-            if (response == null || response.isEmpty()) {
-                log.warn("No games found for user: {}", user.getLichessUsername());
-                return games;
-            }
+    public List<Game> fetchUserGames(String username, int numberOfGames) {
+        log.info("Fetching {} games for user {} from Lichess", numberOfGames, username);
 
-            // Lichess returns NDJSON (newline-delimited JSON)
-            String[] lines = response.split("\n");
-            
-            for (String line : lines) {
-                if (line.trim().isEmpty()) continue;
-                
-                try {
-                    JsonNode gameNode = objectMapper.readTree(line);
-                    Game game = parseL ichessGame(gameNode, user);
-                    if (game != null) {
-                        games.add(game);
-                    }
-                } catch (Exception e) {
-                    log.error("Error parsing game: {}", e.getMessage());
-                }
-            }
-            
-            log.info("Successfully fetched {} games from Lichess", games.size());
-            
+        try {
+            String endpoint = String.format("/api/games/user/%s?max=%d&pgnInJson=true&clocks=false&evals=false&opening=true",
+                    username, numberOfGames);
+
+            List<Game> games = webClient.get()
+                    .uri(endpoint)
+                    .header("Accept", "application/x-ndjson")
+                    .retrieve()
+                    .bodyToFlux(String.class)
+                    .take(numberOfGames)
+                    .map(this::parseNdJsonGame)
+                    .filter(game -> game != null)
+                    .collectList()
+                    .block(Duration.ofSeconds(30));
+
+            log.info("Successfully fetched {} games from Lichess", games != null ? games.size() : 0);
+            return games != null ? games : List.of();
+
         } catch (Exception e) {
             log.error("Error fetching games from Lichess: {}", e.getMessage(), e);
+            throw new RuntimeException("Failed to fetch games from Lichess: " + e.getMessage());
         }
-        
-        return games;
     }
 
-    private Game parseLichessGame(JsonNode gameNode, User user) {
+    private Game parseNdJsonGame(String jsonLine) {
         try {
+            // Simple JSON parsing (you might want to use Jackson ObjectMapper for production)
             Game game = new Game();
-            game.setUser(user);
-            game.setPlatform("lichess");
-            game.setGameId(gameNode.get("id").asText());
-            game.setPgn(gameNode.get("pgn").asText());
+            game.setPlatform("LICHESS");
             
-            // Time control
-            JsonNode clock = gameNode.get("clock");
-            if (clock != null) {
-                int initial = clock.get("initial").asInt();
-                int increment = clock.get("increment").asInt();
-                game.setTimeControl(String.format("%d+%d", initial / 60, increment));
-            } else {
-                game.setTimeControl("correspondence");
+            // Extract PGN from JSON
+            int pgnStart = jsonLine.indexOf("\"pgn\":\"");
+            if (pgnStart != -1) {
+                pgnStart += 7;
+                int pgnEnd = jsonLine.indexOf("\"", pgnStart);
+                if (pgnEnd != -1) {
+                    String pgn = jsonLine.substring(pgnStart, pgnEnd)
+                            .replace("\\n", "\n")
+                            .replace("\\\"", "\"");
+                    game.setPgn(pgn);
+                }
             }
-            
-            // Players and ratings
-            JsonNode players = gameNode.get("players");
-            JsonNode white = players.get("white");
-            JsonNode black = players.get("black");
-            
-            String username = user.getLichessUsername();
-            boolean isWhite = white.get("user").get("name").asText().equalsIgnoreCase(username);
-            
-            game.setPlayedAs(isWhite ? "white" : "black");
-            game.setWhiteRating(white.has("rating") ? white.get("rating").asInt() : null);
-            game.setBlackRating(black.has("rating") ? black.get("rating").asInt() : null);
-            
-            // Result
-            String winner = gameNode.has("winner") ? gameNode.get("winner").asText() : "draw";
-            if (winner.equals("draw") || !gameNode.has("winner")) {
-                game.setResult("draw");
-            } else if ((isWhite && winner.equals("white")) || (!isWhite && winner.equals("black"))) {
-                game.setResult("win");
-            } else {
-                game.setResult("loss");
+
+            // Extract game ID
+            int idStart = jsonLine.indexOf("\"id\":\"");
+            if (idStart != -1) {
+                idStart += 6;
+                int idEnd = jsonLine.indexOf("\"", idStart);
+                if (idEnd != -1) {
+                    game.setGameId(jsonLine.substring(idStart, idEnd));
+                }
             }
-            
-            // Played at
-            long timestamp = gameNode.get("createdAt").asLong();
-            game.setPlayedAt(LocalDateTime.ofInstant(
-                    Instant.ofEpochMilli(timestamp), ZoneId.systemDefault()));
-            
+
+            // Extract result
+            int resultStart = jsonLine.indexOf("\"winner\":\"");
+            if (resultStart != -1) {
+                resultStart += 10;
+                int resultEnd = jsonLine.indexOf("\"", resultStart);
+                if (resultEnd != -1) {
+                    String winner = jsonLine.substring(resultStart, resultEnd);
+                    game.setResult(winner.equals("white") ? "1-0" : winner.equals("black") ? "0-1" : "1/2-1/2");
+                }
+            } else {
+                game.setResult("1/2-1/2"); // Draw if no winner
+            }
+
             return game;
-            
+
         } catch (Exception e) {
-            log.error("Error parsing Lichess game: {}", e.getMessage());
+            log.error("Error parsing game JSON: {}", e.getMessage());
             return null;
         }
     }

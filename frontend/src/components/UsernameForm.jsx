@@ -1,67 +1,77 @@
-import { useState } from 'react'
-import { analysisAPI } from '../services/api'
+import React, { useState } from 'react';
+import { analyzeUser } from '../services/api';
+import { Loader2, User, Hash } from 'lucide-react';
 
-function UsernameForm({ onAnalysisStart, onAnalysisComplete, onError }) {
-  const [username, setUsername] = useState('')
-  const [platform, setPlatform] = useState('lichess')
-  const [gameCount, setGameCount] = useState(50)
+export default function UsernameForm({ onAnalysisComplete, onAnalysisStart }) {
+  const [username, setUsername] = useState('');
+  const [platform, setPlatform] = useState('LICHESS');
+  const [numberOfGames, setNumberOfGames] = useState(50);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
 
   const handleSubmit = async (e) => {
-    e.preventDefault()
-
+    e.preventDefault();
+    
     if (!username.trim()) {
-      onError('Please enter a username')
-      return
+      setError('Please enter a username');
+      return;
     }
 
-    onAnalysisStart()
+    setError('');
+    setLoading(true);
+    
+    if (onAnalysisStart) {
+      onAnalysisStart();
+    }
 
     try {
-      const result = await analysisAPI.startAnalysis(username, platform, gameCount)
-      onAnalysisComplete(result)
-    } catch (error) {
-      onError(error.message)
+      const data = await analyzeUser(username.trim(), platform, numberOfGames);
+      
+      if (onAnalysisComplete) {
+        onAnalysisComplete(data);
+      }
+    } catch (err) {
+      setError(err.message || 'Failed to analyze games. Please check the username and try again.');
+      setLoading(false);
     }
-  }
+  };
 
   return (
     <div className="max-w-2xl mx-auto">
-      <div className="bg-white rounded-xl shadow-lg p-8">
-        <div className="text-center mb-8">
-          <h2 className="text-2xl font-bold text-gray-900 mb-2">
-            Analyze Your Chess Games
-          </h2>
-          <p className="text-gray-600">
-            Get AI-powered insights about your playing style, strengths, and areas for improvement
-          </p>
+      <div className="bg-white rounded-2xl shadow-2xl p-8">
+        <div className="flex items-center gap-3 mb-6">
+          <User className="text-purple-600" size={32} />
+          <h2 className="text-2xl font-bold text-gray-800">Enter Player Details</h2>
         </div>
 
         <form onSubmit={handleSubmit} className="space-y-6">
           {/* Platform Selection */}
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-2">
+            <label className="block text-sm font-semibold text-gray-700 mb-2">
               Platform
             </label>
             <div className="grid grid-cols-2 gap-4">
               <button
                 type="button"
-                onClick={() => setPlatform('lichess')}
-                className={`py-3 px-4 rounded-lg font-medium transition-all ${
-                  platform === 'lichess'
-                    ? 'bg-chess-accent text-white shadow-md'
+                onClick={() => setPlatform('LICHESS')}
+                className={`py-3 px-4 rounded-lg font-semibold transition-all ${
+                  platform === 'LICHESS'
+                    ? 'bg-purple-600 text-white shadow-lg'
                     : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
                 }`}
+                disabled={loading}
               >
                 Lichess
               </button>
               <button
                 type="button"
-                onClick={() => setPlatform('chesscom')}
-                className={`py-3 px-4 rounded-lg font-medium transition-all ${
-                  platform === 'chesscom'
-                    ? 'bg-chess-accent text-white shadow-md'
+                onClick={() => setPlatform('CHESS_COM')}
+                className={`py-3 px-4 rounded-lg font-semibold transition-all ${
+                  platform === 'CHESS_COM'
+                    ? 'bg-purple-600 text-white shadow-lg'
                     : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
                 }`}
+                disabled={loading}
               >
                 Chess.com
               </button>
@@ -70,33 +80,33 @@ function UsernameForm({ onAnalysisStart, onAnalysisComplete, onError }) {
 
           {/* Username Input */}
           <div>
-            <label htmlFor="username" className="block text-sm font-medium text-gray-700 mb-2">
+            <label className="block text-sm font-semibold text-gray-700 mb-2">
               Username
             </label>
             <input
               type="text"
-              id="username"
               value={username}
               onChange={(e) => setUsername(e.target.value)}
-              placeholder={platform === 'lichess' ? 'hikaru' : 'magnuscarlsen'}
-              className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-chess-accent focus:border-transparent outline-none transition"
+              placeholder={platform === 'LICHESS' ? 'e.g., DrNykterstein' : 'e.g., Hikaru'}
+              className="w-full px-4 py-3 border-2 border-gray-300 rounded-lg focus:border-purple-500 focus:outline-none transition-colors"
+              disabled={loading}
             />
           </div>
 
-          {/* Game Count Slider */}
+          {/* Number of Games */}
           <div>
-            <label htmlFor="gameCount" className="block text-sm font-medium text-gray-700 mb-2">
-              Number of Games to Analyze: <span className="font-bold">{gameCount}</span>
+            <label className="block text-sm font-semibold text-gray-700 mb-2">
+              Number of Games to Analyze: {numberOfGames}
             </label>
             <input
               type="range"
-              id="gameCount"
               min="10"
               max="200"
               step="10"
-              value={gameCount}
-              onChange={(e) => setGameCount(Number(e.target.value))}
-              className="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-chess-accent"
+              value={numberOfGames}
+              onChange={(e) => setNumberOfGames(parseInt(e.target.value))}
+              className="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-purple-600"
+              disabled={loading}
             />
             <div className="flex justify-between text-xs text-gray-500 mt-1">
               <span>10 games</span>
@@ -104,24 +114,41 @@ function UsernameForm({ onAnalysisStart, onAnalysisComplete, onError }) {
             </div>
           </div>
 
+          {/* Error Message */}
+          {error && (
+            <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-lg">
+              {error}
+            </div>
+          )}
+
           {/* Submit Button */}
           <button
             type="submit"
-            className="w-full bg-chess-accent hover:bg-green-700 text-white font-bold py-4 px-6 rounded-lg transition-colors shadow-lg hover:shadow-xl transform hover:-translate-y-0.5"
+            disabled={loading || !username.trim()}
+            className="w-full bg-gradient-to-r from-purple-600 to-indigo-600 text-white py-3 px-6 rounded-lg font-semibold hover:from-purple-700 hover:to-indigo-700 transition-all disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
           >
-            Analyze My Games
+            {loading ? (
+              <>
+                <Loader2 className="animate-spin" size={20} />
+                Analyzing...
+              </>
+            ) : (
+              <>
+                <Hash size={20} />
+                Analyze My Games
+              </>
+            )}
           </button>
         </form>
 
-        <div className="mt-6 p-4 bg-blue-50 rounded-lg">
+        {/* Info */}
+        <div className="mt-6 p-4 bg-blue-50 rounded-lg border border-blue-200">
           <p className="text-sm text-blue-800">
             <strong>💡 Tip:</strong> Analysis may take 1-3 minutes depending on the number of games.
-            We'll analyze your games with Stockfish and provide AI insights with Claude.
+            We'll analyze your games with Stockfish and provide AI insights with Groq.
           </p>
         </div>
       </div>
     </div>
-  )
+  );
 }
-
-export default UsernameForm

@@ -1,20 +1,21 @@
 {
   "name": "chess-analysis-frontend",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "private": true,
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "preview": "vite preview",
-    "lint": "eslint src"
+    "preview": "vite preview"
   },
   "dependencies": {
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "axios": "^1.6.7",
     "recharts": "^2.10.3",
-    "lucide-react": "^0.314.0"
+    "lucide-react": "^0.314.0",
+    "chess.js": "^1.0.0-beta.6",
+    "react-chessboard": "^4.3.0"
   },
   "devDependencies": {
     "@types/react": "^18.2.55",

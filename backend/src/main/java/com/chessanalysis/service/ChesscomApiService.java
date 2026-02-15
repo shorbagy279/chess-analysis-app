@@ -1,147 +1,113 @@
 package com.chessanalysis.service;
 
 import com.chessanalysis.model.Game;
-import com.chessanalysis.model.User;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
-import org.springframework.web.client.RestTemplate;
+import org.springframework.web.reactive.function.client.WebClient;
 
-import java.time.Instant;
-import java.time.LocalDateTime;
-import java.time.ZoneId;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 
 @Service
 @Slf4j
-public class ChesscomApiService {
+public class ChessComApiService {
 
     @Value("${chesscom.api.url}")
-    private String chesscomApiUrl;
+    private String chessComApiUrl;
 
-    private final RestTemplate restTemplate;
+    private final WebClient webClient;
     private final ObjectMapper objectMapper;
 
-    public ChesscomApiService(RestTemplate restTemplate) {
-        this.restTemplate = restTemplate;
+    public ChessComApiService(WebClient.Builder webClientBuilder) {
+        this.webClient = webClientBuilder
+                .baseUrl(chessComApiUrl)
+                .build();
         this.objectMapper = new ObjectMapper();
     }
 
-    public List<Game> fetchGames(User user, int count) {
-        List<Game> games = new ArrayList<>();
-        
+    public List<Game> fetchUserGames(String username, int numberOfGames) {
+        log.info("Fetching {} games for user {} from Chess.com", numberOfGames, username);
+
         try {
-            // First, get list of monthly archives
-            String archivesUrl = String.format("%s/player/%s/games/archives", 
-                    chesscomApiUrl, user.getChesscomUsername());
-            
-            log.info("Fetching archives from Chess.com: {}", archivesUrl);
-            
-            String archivesResponse = restTemplate.getForObject(archivesUrl, String.class);
-            JsonNode archivesNode = objectMapper.readTree(archivesResponse);
-            JsonNode archives = archivesNode.get("archives");
-            
-            if (archives == null || archives.size() == 0) {
-                log.warn("No archives found for user: {}", user.getChesscomUsername());
-                return games;
+            // Get current month's games (you can expand this to fetch from multiple months)
+            String currentMonth = java.time.YearMonth.now().toString().replace("-", "/");
+            String endpoint = String.format("/player/%s/games/%s", username, currentMonth);
+
+            String response = webClient.get()
+                    .uri(endpoint)
+                    .retrieve()
+                    .bodyToMono(String.class)
+                    .block(Duration.ofSeconds(30));
+
+            if (response == null || response.isEmpty()) {
+                log.warn("No games found for user {} in current month", username);
+                return List.of();
             }
 
-            // Get games from most recent archives first
-            for (int i = archives.size() - 1; i >= 0 && games.size() < count; i--) {
-                String archiveUrl = archives.get(i).asText();
-                List<Game> monthGames = fetchGamesFromArchive(archiveUrl, user);
-                games.addAll(monthGames);
-            }
-            
-            // Limit to requested count
-            if (games.size() > count) {
-                games = games.subList(0, count);
-            }
-            
-            log.info("Successfully fetched {} games from Chess.com", games.size());
-            
+            return parseGamesFromJson(response, numberOfGames);
+
         } catch (Exception e) {
             log.error("Error fetching games from Chess.com: {}", e.getMessage(), e);
+            throw new RuntimeException("Failed to fetch games from Chess.com: " + e.getMessage());
         }
-        
-        return games;
     }
 
-    private List<Game> fetchGamesFromArchive(String archiveUrl, User user) {
+    private List<Game> parseGamesFromJson(String json, int maxGames) {
         List<Game> games = new ArrayList<>();
-        
+
         try {
-            String response = restTemplate.getForObject(archiveUrl, String.class);
-            JsonNode archiveNode = objectMapper.readTree(response);
-            JsonNode gamesArray = archiveNode.get("games");
-            
-            if (gamesArray == null) return games;
-            
-            for (JsonNode gameNode : gamesArray) {
-                Game game = parseChesscomGame(gameNode, user);
-                if (game != null) {
-                    games.add(game);
+            JsonNode root = objectMapper.readTree(json);
+            JsonNode gamesNode = root.get("games");
+
+            if (gamesNode != null && gamesNode.isArray()) {
+                int count = 0;
+                for (JsonNode gameNode : gamesNode) {
+                    if (count >= maxGames) break;
+
+                    Game game = new Game();
+                    game.setPlatform("CHESS_COM");
+
+                    // Extract PGN
+                    if (gameNode.has("pgn")) {
+                        game.setPgn(gameNode.get("pgn").asText());
+                    }
+
+                    // Extract game URL as ID
+                    if (gameNode.has("url")) {
+                        String url = gameNode.get("url").asText();
+                        game.setGameId(url.substring(url.lastIndexOf("/") + 1));
+                    }
+
+                    // Extract result
+                    if (gameNode.has("white") && gameNode.get("white").has("result")) {
+                        String whiteResult = gameNode.get("white").get("result").asText();
+                        if (whiteResult.equals("win")) {
+                            game.setResult("1-0");
+                        } else if (whiteResult.equals("checkmated") || whiteResult.equals("resigned") || 
+                                   whiteResult.equals("timeout") || whiteResult.equals("abandoned")) {
+                            game.setResult("0-1");
+                        } else {
+                            game.setResult("1/2-1/2");
+                        }
+                    }
+
+                    if (game.getPgn() != null && !game.getPgn().isEmpty()) {
+                        games.add(game);
+                        count++;
+                    }
                 }
             }
-            
-        } catch (Exception e) {
-            log.error("Error fetching games from archive {}: {}", archiveUrl, e.getMessage());
-        }
-        
-        return games;
-    }
 
-    private Game parseChesscomGame(JsonNode gameNode, User user) {
-        try {
-            Game game = new Game();
-            game.setUser(user);
-            game.setPlatform("chesscom");
-            game.setGameId(gameNode.get("url").asText().substring(
-                    gameNode.get("url").asText().lastIndexOf("/") + 1));
-            game.setPgn(gameNode.get("pgn").asText());
-            
-            // Time control
-            String timeClass = gameNode.get("time_class").asText();
-            game.setTimeControl(timeClass);
-            
-            // Players and ratings
-            JsonNode white = gameNode.get("white");
-            JsonNode black = gameNode.get("black");
-            
-            String username = user.getChesscomUsername();
-            boolean isWhite = white.get("username").asText().equalsIgnoreCase(username);
-            
-            game.setPlayedAs(isWhite ? "white" : "black");
-            game.setWhiteRating(white.has("rating") ? white.get("rating").asInt() : null);
-            game.setBlackRating(black.has("rating") ? black.get("rating").asInt() : null);
-            
-            // Result
-            String whiteResult = white.get("result").asText();
-            String blackResult = black.get("result").asText();
-            
-            if (whiteResult.equals("win") && isWhite) {
-                game.setResult("win");
-            } else if (blackResult.equals("win") && !isWhite) {
-                game.setResult("win");
-            } else if (whiteResult.contains("draw") || blackResult.contains("draw")) {
-                game.setResult("draw");
-            } else {
-                game.setResult("loss");
-            }
-            
-            // Played at
-            long timestamp = gameNode.get("end_time").asLong();
-            game.setPlayedAt(LocalDateTime.ofInstant(
-                    Instant.ofEpochSecond(timestamp), ZoneId.systemDefault()));
-            
-            return game;
-            
+            log.info("Successfully parsed {} games from Chess.com", games.size());
+
         } catch (Exception e) {
-            log.error("Error parsing Chess.com game: {}", e.getMessage());
-            return null;
+            log.error("Error parsing Chess.com games JSON: {}", e.getMessage(), e);
         }
+
+        return games;
     }
 }

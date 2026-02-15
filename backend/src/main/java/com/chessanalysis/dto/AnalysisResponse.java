@@ -4,7 +4,8 @@ import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
 import lombok.NoArgsConstructor;
-import java.time.LocalDateTime;
+
+import java.util.List;
 import java.util.Map;
 
 @Data
@@ -12,35 +13,23 @@ import java.util.Map;
 @NoArgsConstructor
 @AllArgsConstructor
 public class AnalysisResponse {
-
     private Long userId;
     private String username;
     private String platform;
-    private Integer totalGamesAnalyzed;
-    
-    // AI Insights
+    private Integer totalGames;
+    private Integer wins;
+    private Integer losses;
+    private Integer draws;
+    private Double avgAccuracy;
+    private Integer totalBlunders;
+    private Integer totalMistakes;
+    private Integer totalInaccuracies;
+    private List<String> topOpenings;
+    private Map<String, Long> timeControlDistribution;
     private String playingStyle;
-    private String strengths;
-    private String weaknesses;
-    private String commonMistakes;
-    private String recommendations;
+    private List<String> strengths;
+    private List<String> weaknesses;
+    private List<String> commonMistakes;
+    private List<String> recommendations;
     private String openingAnalysis;
-    
-    // Ratings
-    private String tacticalRating;
-    private String positionalRating;
-    private String endgameRating;
-    private String timeManagementRating;
-    
-    // Statistics
-    private Map<String, Object> statistics;
-    private Map<String, Object> openingStats;
-    private Map<String, Object> performanceByTimeControl;
-    
-    private LocalDateTime generatedAt;
-    
-    // Progress tracking
-    private String analysisId;
-    private String status; // "processing", "completed", "failed"
-    private Integer progress; // 0-100
 }

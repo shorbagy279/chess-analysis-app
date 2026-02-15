@@ -35,8 +35,7 @@ public class StockfishService {
         try {
             // Parse PGN
             Board board = new Board();
-            MoveList moves = new MoveList();
-            moves.loadFromSan(game.getPgn());
+            String[] pgnMoves = extractMovesFromPgn(game.getPgn());
 
             List<Integer> centipawnLosses = new ArrayList<>();
             int blunders = 0;
@@ -44,36 +43,37 @@ public class StockfishService {
             int inaccuracies = 0;
             int bestMoves = 0;
 
-            // Analyze key positions (every 3 moves to save time)
-            for (int i = 0; i < moves.size(); i += 3) {
+            // Analyze key positions
+            for (int i = 0; i < pgnMoves.length; i++) {
                 try {
-                    board.doMove(moves.get(i));
-                    
-                    // Skip opening moves (first 10 moves)
-                    if (i < 10) continue;
+                    // Skip opening moves
+                    if (i < 10) {
+                        board.doMove(pgnMoves[i]);
+                        continue;
+                    }
 
-                    // Get evaluation before the move
+                    // Get evaluation before move
                     int evalBefore = getEvaluation(board.getFen());
                     
                     // Make the move
-                    if (i + 1 < moves.size()) {
-                        board.doMove(moves.get(i + 1));
-                        int evalAfter = getEvaluation(board.getFen());
-                        
-                        // Calculate centipawn loss
-                        int cpLoss = Math.abs(evalAfter - evalBefore);
-                        centipawnLosses.add(cpLoss);
-                        
-                        // Classify move quality
-                        if (cpLoss < 20) {
-                            bestMoves++;
-                        } else if (cpLoss < 50) {
-                            inaccuracies++;
-                        } else if (cpLoss < 100) {
-                            mistakes++;
-                        } else {
-                            blunders++;
-                        }
+                    board.doMove(pgnMoves[i]);
+                    
+                    // Get evaluation after move
+                    int evalAfter = getEvaluation(board.getFen());
+                    
+                    // Calculate centipawn loss
+                    int cpLoss = Math.abs(evalAfter - evalBefore);
+                    centipawnLosses.add(cpLoss);
+                    
+                    // Classify move quality
+                    if (cpLoss < 20) {
+                        bestMoves++;
+                    } else if (cpLoss < 50) {
+                        inaccuracies++;
+                    } else if (cpLoss < 100) {
+                        mistakes++;
+                    } else {
+                        blunders++;
                     }
                 } catch (Exception e) {
                     log.error("Error analyzing position: {}", e.getMessage());
@@ -89,7 +89,7 @@ public class StockfishService {
                 analysis.setAvgCentipawnLoss(
                         BigDecimal.valueOf(avgCpLoss).setScale(2, RoundingMode.HALF_UP));
                 
-                // Calculate accuracy (simplified formula)
+                // Calculate accuracy
                 double accuracy = Math.max(0, 100 - (avgCpLoss / 2));
                 analysis.setAccuracy(
                         BigDecimal.valueOf(accuracy).setScale(2, RoundingMode.HALF_UP));
@@ -101,14 +101,7 @@ public class StockfishService {
             analysis.setBestMoves(bestMoves);
 
             // Extract opening name from PGN
-            String pgn = game.getPgn();
-            if (pgn.contains("[Opening")) {
-                int start = pgn.indexOf("[Opening \"") + 10;
-                int end = pgn.indexOf("\"]", start);
-                if (end > start) {
-                    analysis.setOpeningName(pgn.substring(start, end));
-                }
-            }
+            extractOpeningInfo(game.getPgn(), analysis);
 
             log.info("Game analysis complete: {} blunders, {} mistakes, {} inaccuracies", 
                     blunders, mistakes, inaccuracies);
@@ -121,25 +114,32 @@ public class StockfishService {
     }
 
     private int getEvaluation(String fen) {
-        // Simplified evaluation - in production, use actual Stockfish process
-        // This is a placeholder that returns a random evaluation
-        // Real implementation would communicate with Stockfish engine
-        
         try {
-            Process process = Runtime.getRuntime().exec(stockfishPath);
+            ProcessBuilder pb = new ProcessBuilder(stockfishPath);
+            Process process = pb.start();
+            
             BufferedWriter writer = new BufferedWriter(
                     new OutputStreamWriter(process.getOutputStream()));
             BufferedReader reader = new BufferedReader(
                     new InputStreamReader(process.getInputStream()));
 
+            // Initialize UCI
             writer.write("uci\n");
             writer.flush();
             
+            // Wait for UCI OK
+            String line;
+            while ((line = reader.readLine()) != null) {
+                if (line.equals("uciok")) {
+                    break;
+                }
+            }
+
+            // Set position
             writer.write(String.format("position fen %s\n", fen));
             writer.write(String.format("go depth %d\n", depth));
             writer.flush();
 
-            String line;
             int score = 0;
             while ((line = reader.readLine()) != null) {
                 if (line.startsWith("info") && line.contains("score cp")) {
@@ -158,6 +158,9 @@ public class StockfishService {
 
             writer.write("quit\n");
             writer.flush();
+            
+            writer.close();
+            reader.close();
             process.destroy();
 
             return score;
@@ -165,6 +168,54 @@ public class StockfishService {
         } catch (Exception e) {
             log.error("Error getting Stockfish evaluation: {}", e.getMessage());
             return 0;
+        }
+    }
+
+    private String[] extractMovesFromPgn(String pgn) {
+        // Remove comments and variations
+        pgn = pgn.replaceAll("\\{[^}]*\\}", "");
+        pgn = pgn.replaceAll("\\([^)]*\\)", "");
+        
+        // Remove headers
+        pgn = pgn.replaceAll("\\[.*?\\]", "");
+        
+        // Split by whitespace and filter moves
+        String[] tokens = pgn.split("\\s+");
+        List<String> moves = new ArrayList<>();
+        
+        for (String token : tokens) {
+            // Skip move numbers, result, and empty strings
+            if (token.matches("\\d+\\.+") || 
+                token.equals("1-0") || 
+                token.equals("0-1") || 
+                token.equals("1/2-1/2") ||
+                token.trim().isEmpty()) {
+                continue;
+            }
+            moves.add(token);
+        }
+        
+        return moves.toArray(new String[0]);
+    }
+
+    private void extractOpeningInfo(String pgn, Analysis analysis) {
+        // Extract opening name from PGN headers
+        if (pgn.contains("[Opening")) {
+            int start = pgn.indexOf("[Opening \"") + 10;
+            int end = pgn.indexOf("\"]", start);
+            if (end > start && end < pgn.length()) {
+                String opening = pgn.substring(start, end);
+                analysis.setOpeningName(opening);
+            }
+        }
+        
+        if (pgn.contains("[ECO")) {
+            int start = pgn.indexOf("[ECO \"") + 6;
+            int end = pgn.indexOf("\"]", start);
+            if (end > start && end < pgn.length()) {
+                String eco = pgn.substring(start, end);
+                analysis.setOpeningEco(eco);
+            }
         }
     }
 }

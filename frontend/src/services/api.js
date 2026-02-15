@@ -1,6 +1,6 @@
 import axios from 'axios';
 
-const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8080/api';
+const API_BASE_URL = 'http://localhost:8080/api';
 
 const api = axios.create({
   baseURL: API_BASE_URL,
@@ -9,42 +9,32 @@ const api = axios.create({
   },
 });
 
-export const analysisAPI = {
-  // Start a new analysis
-  startAnalysis: async (username, platform, gameCount = 50) => {
-    try {
-      const response = await api.post('/analysis/start', {
-        username,
-        platform,
-        gameCount,
-      });
-      return response.data;
-    } catch (error) {
-      throw new Error(error.response?.data?.error || 'Failed to start analysis');
-    }
-  },
+// User Analysis API
+export const analyzeUser = async (username, platform, numberOfGames) => {
+  try {
+    const response = await api.post('/analysis/user/start', {
+      username,
+      platform,
+      numberOfGames,
+    });
+    return response.data;
+  } catch (error) {
+    console.error('Error analyzing user:', error);
+    throw error.response?.data?.message || 'Failed to analyze user games';
+  }
+};
 
-  // Get latest analysis for a user
-  getLatestAnalysis: async (username, platform) => {
-    try {
-      const response = await api.get(`/analysis/user/${username}`, {
-        params: { platform },
-      });
-      return response.data;
-    } catch (error) {
-      throw new Error(error.response?.data?.error || 'Failed to fetch analysis');
-    }
-  },
-
-  // Health check
-  healthCheck: async () => {
-    try {
-      const response = await api.get('/analysis/health');
-      return response.data;
-    } catch (error) {
-      return { status: 'DOWN' };
-    }
-  },
+// Game Analysis API (NEW!)
+export const analyzeGame = async (pgn) => {
+  try {
+    const response = await api.post('/analysis/game', {
+      pgn,
+    });
+    return response.data;
+  } catch (error) {
+    console.error('Error analyzing game:', error);
+    throw error.response?.data?.message || 'Failed to analyze game';
+  }
 };
 
 export default api;

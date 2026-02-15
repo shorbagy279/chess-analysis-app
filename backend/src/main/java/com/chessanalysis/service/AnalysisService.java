@@ -6,207 +6,175 @@ import com.chessanalysis.model.*;
 import com.chessanalysis.repository.*;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
-import java.math.BigDecimal;
 import java.time.LocalDateTime;
-import java.util.*;
+import java.util.List;
+import java.util.Map;
 import java.util.stream.Collectors;
 
 @Service
-@Slf4j
 @RequiredArgsConstructor
+@Slf4j
 public class AnalysisService {
 
     private final UserRepository userRepository;
     private final GameRepository gameRepository;
     private final AnalysisRepository analysisRepository;
     private final AIInsightRepository aiInsightRepository;
-    
     private final LichessApiService lichessApiService;
-    private final ChesscomApiService chesscomApiService;
+    private final ChessComApiService chessComApiService;
     private final StockfishService stockfishService;
-    private final ClaudeAIService claudeAIService;
+    private final GroqAIService groqAIService;
 
     @Transactional
-    public AnalysisResponse analyzePlayer(AnalysisRequest request) {
+    public AnalysisResponse analyzeUser(AnalysisRequest request) {
         log.info("Starting analysis for user: {} on platform: {}", 
                 request.getUsername(), request.getPlatform());
 
-        // Get or create user
-        User user = getOrCreateUser(request);
+        // Find or create user
+        User user = findOrCreateUser(request);
 
-        // Fetch games
-        List<Game> games = fetchGames(user, request);
+        // Fetch games from the appropriate platform
+        List<Game> games = fetchGames(request);
         
-        if (games.isEmpty()) {
-            throw new RuntimeException("No games found for user: " + request.getUsername());
-        }
+        // Save games
+        games.forEach(game -> {
+            game.setUser(user);
+            gameRepository.save(game);
+        });
 
-        // Analyze games with Stockfish
-        List<Analysis> analyses = analyzeGames(games);
+        // Analyze each game with Stockfish
+        List<Analysis> analyses = games.stream()
+                .map(stockfishService::analyzeGame)
+                .peek(analysisRepository::save)
+                .collect(Collectors.toList());
 
-        // Generate AI insights with Claude
-        AIInsight aiInsight = claudeAIService.generateInsights(user, games, analyses);
+        // Generate AI insights
+        AIInsight aiInsight = groqAIService.generateInsights(user, games, analyses);
+        aiInsight.setUser(user);
+        aiInsight.setGeneratedAt(LocalDateTime.now());
         aiInsightRepository.save(aiInsight);
 
-        // Update user
-        user.setLastAnalyzed(LocalDateTime.now());
+        // Update user's last analyzed time
+        user.setLastAnalyzedAt(LocalDateTime.now());
         userRepository.save(user);
 
         // Build response
-        return buildAnalysisResponse(user, games, analyses, aiInsight);
+        return buildResponse(user, games, analyses, aiInsight);
     }
 
-    private User getOrCreateUser(AnalysisRequest request) {
-        if ("lichess".equals(request.getPlatform())) {
-            return userRepository.findByLichessUsername(request.getUsername())
+    private User findOrCreateUser(AnalysisRequest request) {
+        String platform = request.getPlatform();
+        String username = request.getUsername();
+
+        if ("LICHESS".equalsIgnoreCase(platform)) {
+            return userRepository.findByLichessUsername(username)
                     .orElseGet(() -> {
-                        User newUser = new User();
-                        newUser.setLichessUsername(request.getUsername());
+                        User newUser = User.builder()
+                                .lichessUsername(username)
+                                .createdAt(LocalDateTime.now())
+                                .build();
                         return userRepository.save(newUser);
                     });
         } else {
-            return userRepository.findByChesscomUsername(request.getUsername())
+            return userRepository.findByChesscomUsername(username)
                     .orElseGet(() -> {
-                        User newUser = new User();
-                        newUser.setChesscomUsername(request.getUsername());
+                        User newUser = User.builder()
+                                .chesscomUsername(username)
+                                .createdAt(LocalDateTime.now())
+                                .build();
                         return userRepository.save(newUser);
                     });
         }
     }
 
-    private List<Game> fetchGames(User user, AnalysisRequest request) {
-        List<Game> games;
-        
-        if ("lichess".equals(request.getPlatform())) {
-            games = lichessApiService.fetchGames(user, request.getGameCount());
+    private List<Game> fetchGames(AnalysisRequest request) {
+        String platform = request.getPlatform();
+        int gameCount = request.getNumberOfGames() != null ? request.getNumberOfGames() : 10;
+
+        if ("LICHESS".equalsIgnoreCase(platform)) {
+            return lichessApiService.fetchUserGames(request.getUsername(), gameCount);
         } else {
-            games = chesscomApiService.fetchGames(user, request.getGameCount());
+            return chessComApiService.fetchUserGames(request.getUsername(), gameCount);
         }
-
-        // Save games to database
-        for (Game game : games) {
-            if (!gameRepository.existsByUserAndPlatformAndGameId(
-                    user, game.getPlatform(), game.getGameId())) {
-                gameRepository.save(game);
-            }
-        }
-
-        return games;
     }
 
-    private List<Analysis> analyzeGames(List<Game> games) {
-        List<Analysis> analyses = new ArrayList<>();
-        
-        int count = 0;
-        for (Game game : games) {
-            try {
-                log.info("Analyzing game {}/{}", ++count, games.size());
-                
-                Analysis analysis = stockfishService.analyzeGame(game);
-                analysisRepository.save(analysis);
-                analyses.add(analysis);
-                
-            } catch (Exception e) {
-                log.error("Error analyzing game {}: {}", game.getGameId(), e.getMessage());
-            }
-        }
-        
-        return analyses;
-    }
-
-    private AnalysisResponse buildAnalysisResponse(User user, List<Game> games, 
-                                                    List<Analysis> analyses, AIInsight aiInsight) {
-        
+    private AnalysisResponse buildResponse(User user, List<Game> games, 
+                                          List<Analysis> analyses, AIInsight aiInsight) {
         // Calculate statistics
-        Map<String, Object> statistics = new HashMap<>();
-        statistics.put("totalGames", games.size());
-        statistics.put("wins", games.stream().filter(g -> "win".equals(g.getResult())).count());
-        statistics.put("losses", games.stream().filter(g -> "loss".equals(g.getResult())).count());
-        statistics.put("draws", games.stream().filter(g -> "draw".equals(g.getResult())).count());
-        
+        int wins = (int) games.stream()
+                .filter(g -> "1-0".equals(g.getResult()) || "0-1".equals(g.getResult()))
+                .count();
+        int losses = (int) games.stream()
+                .filter(g -> "0-1".equals(g.getResult()))
+                .count();
+        int draws = (int) games.stream()
+                .filter(g -> "1/2-1/2".equals(g.getResult()))
+                .count();
+
         double avgAccuracy = analyses.stream()
-                .map(Analysis::getAccuracy)
-                .filter(Objects::nonNull)
-                .mapToDouble(BigDecimal::doubleValue)
+                .filter(a -> a.getAccuracy() != null)
+                .mapToDouble(a -> a.getAccuracy().doubleValue())
                 .average()
                 .orElse(0.0);
-        statistics.put("averageAccuracy", avgAccuracy);
-        
-        int totalBlunders = analyses.stream().mapToInt(Analysis::getBlunders).sum();
-        int totalMistakes = analyses.stream().mapToInt(Analysis::getMistakes).sum();
-        int totalInaccuracies = analyses.stream().mapToInt(Analysis::getInaccuracies).sum();
-        
-        statistics.put("totalBlunders", totalBlunders);
-        statistics.put("totalMistakes", totalMistakes);
-        statistics.put("totalInaccuracies", totalInaccuracies);
-        statistics.put("avgBlundersPerGame", totalBlunders * 1.0 / games.size());
-        statistics.put("avgMistakesPerGame", totalMistakes * 1.0 / games.size());
 
-        // Opening statistics
-        Map<String, Long> openingStats = analyses.stream()
-                .filter(a -> a.getOpeningName() != null)
-                .collect(Collectors.groupingBy(Analysis::getOpeningName, Collectors.counting()));
-        
-        Map<String, Object> openingStatsMap = new HashMap<>();
-        openingStats.entrySet().stream()
+        int totalBlunders = analyses.stream()
+                .mapToInt(Analysis::getBlunders)
+                .sum();
+        int totalMistakes = analyses.stream()
+                .mapToInt(Analysis::getMistakes)
+                .sum();
+        int totalInaccuracies = analyses.stream()
+                .mapToInt(Analysis::getInaccuracies)
+                .sum();
+
+        // Get top openings
+        List<String> topOpenings = analyses.stream()
+                .map(Analysis::getOpeningName)
+                .filter(name -> name != null && !name.isEmpty())
+                .collect(Collectors.groupingBy(name -> name, Collectors.counting()))
+                .entrySet().stream()
                 .sorted(Map.Entry.<String, Long>comparingByValue().reversed())
-                .limit(10)
-                .forEach(entry -> openingStatsMap.put(entry.getKey(), entry.getValue()));
+                .limit(5)
+                .map(Map.Entry::getKey)
+                .collect(Collectors.toList());
 
-        // Performance by time control
-        Map<String, Long> timeControlPerf = games.stream()
-                .collect(Collectors.groupingBy(Game::getTimeControl, Collectors.counting()));
+        // Get time control distribution
+        Map<String, Long> timeControlDist = games.stream()
+                .map(Game::getTimeControl)
+                .filter(tc -> tc != null && !tc.isEmpty())
+                .collect(Collectors.groupingBy(tc -> tc, Collectors.counting()));
 
         return AnalysisResponse.builder()
                 .userId(user.getId())
                 .username(user.getLichessUsername() != null ? 
-                        user.getLichessUsername() : user.getChesscomUsername())
-                .platform(games.get(0).getPlatform())
-                .totalGamesAnalyzed(games.size())
+                         user.getLichessUsername() : user.getChesscomUsername())
+                .platform(games.isEmpty() ? "UNKNOWN" : games.get(0).getPlatform())
+                .totalGames(games.size())
+                .wins(wins)
+                .losses(losses)
+                .draws(draws)
+                .avgAccuracy(avgAccuracy)
+                .totalBlunders(totalBlunders)
+                .totalMistakes(totalMistakes)
+                .totalInaccuracies(totalInaccuracies)
+                .topOpenings(topOpenings)
+                .timeControlDistribution(timeControlDist)
                 .playingStyle(aiInsight.getPlayingStyle())
-                .strengths(aiInsight.getStrengths())
-                .weaknesses(aiInsight.getWeaknesses())
-                .commonMistakes(aiInsight.getCommonMistakes())
-                .recommendations(aiInsight.getRecommendations())
+                .strengths(parseList(aiInsight.getStrengths()))
+                .weaknesses(parseList(aiInsight.getWeaknesses()))
+                .commonMistakes(parseList(aiInsight.getCommonMistakes()))
+                .recommendations(parseList(aiInsight.getRecommendations()))
                 .openingAnalysis(aiInsight.getOpeningAnalysis())
-                .tacticalRating(aiInsight.getTacticalRating())
-                .positionalRating(aiInsight.getPositionalRating())
-                .endgameRating(aiInsight.getEndgameRating())
-                .timeManagementRating(aiInsight.getTimeManagementRating())
-                .statistics(statistics)
-                .openingStats(openingStatsMap)
-                .performanceByTimeControl(new HashMap<>(timeControlPerf))
-                .generatedAt(aiInsight.getGeneratedAt())
-                .status("completed")
-                .progress(100)
                 .build();
     }
 
-    public AnalysisResponse getLatestAnalysis(String username, String platform) {
-        User user;
-        
-        if ("lichess".equals(platform)) {
-            user = userRepository.findByLichessUsername(username)
-                    .orElseThrow(() -> new RuntimeException("User not found"));
-        } else {
-            user = userRepository.findByChesscomUsername(username)
-                    .orElseThrow(() -> new RuntimeException("User not found"));
+    private List<String> parseList(String text) {
+        if (text == null || text.isEmpty()) {
+            return List.of();
         }
-
-        AIInsight latestInsight = aiInsightRepository
-                .findFirstByUserOrderByGeneratedAtDesc(user)
-                .orElseThrow(() -> new RuntimeException("No analysis found for user"));
-
-        List<Game> games = gameRepository.findByUserOrderByPlayedAtDesc(user);
-        List<Analysis> analyses = games.stream()
-                .map(game -> analysisRepository.findByGame(game).orElse(null))
-                .filter(Objects::nonNull)
-                .collect(Collectors.toList());
-
-        return buildAnalysisResponse(user, games, analyses, latestInsight);
+        return List.of(text.split("\\n"));
     }
 }

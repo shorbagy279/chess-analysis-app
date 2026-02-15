@@ -1,62 +1,49 @@
-import { PieChart, Pie, Cell, ResponsiveContainer, Legend, Tooltip } from 'recharts'
+function LoadingScreen({ mode = 'user' }) {
+  const userSteps = [
+    'Fetching games from platform...',
+    'Running Stockfish engine analysis...',
+    'Generating AI insights with Groq...',
+    'Preparing your personalized report...'
+  ]
 
-function OpeningsChart({ openings }) {
-  const COLORS = ['#769656', '#3B7C2B', '#2D5F1E', '#1F4212', '#8FBC8F', '#6B8E23']
+  const gameSteps = [
+    'Parsing PGN notation...',
+    'Analyzing positions with Stockfish...',
+    'Identifying critical moments...',
+    'Generating AI insights...'
+  ]
 
-  const data = Object.entries(openings)
-    .sort(([, a], [, b]) => b - a)
-    .slice(0, 6)
-    .map(([name, value]) => ({
-      name: name.length > 30 ? name.substring(0, 30) + '...' : name,
-      value,
-      fullName: name,
-    }))
+  const steps = mode === 'user' ? userSteps : gameSteps
 
   return (
-    <div className="bg-white rounded-xl shadow-lg p-6">
-      <h3 className="text-xl font-bold text-gray-900 mb-6">Opening Repertoire</h3>
-      
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        <div>
-          <ResponsiveContainer width="100%" height={300}>
-            <PieChart>
-              <Pie
-                data={data}
-                cx="50%"
-                cy="50%"
-                labelLine={false}
-                label={(entry) => `${entry.value}`}
-                outerRadius={100}
-                fill="#8884d8"
-                dataKey="value"
-              >
-                {data.map((entry, index) => (
-                  <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
-                ))}
-              </Pie>
-              <Tooltip />
-            </PieChart>
-          </ResponsiveContainer>
-        </div>
-
-        <div className="space-y-3">
-          <h4 className="text-sm font-medium text-gray-700 mb-3">Top Openings</h4>
-          {data.map((opening, index) => (
-            <div key={index} className="flex items-center justify-between p-3 bg-gray-50 rounded-lg">
-              <div className="flex items-center space-x-3">
-                <div
-                  className="w-4 h-4 rounded"
-                  style={{ backgroundColor: COLORS[index % COLORS.length] }}
+    <div className="max-w-2xl mx-auto">
+      <div className="bg-white rounded-xl shadow-lg p-12">
+        <div className="text-center">
+          <div className="loading-spinner mx-auto mb-6"></div>
+          
+          <h2 className="text-2xl font-bold text-gray-900 mb-4">
+            {mode === 'user' ? 'Analyzing Your Games...' : 'Analyzing Game...'}
+          </h2>
+          
+          <div className="space-y-3 text-left max-w-md mx-auto">
+            {steps.map((step, index) => (
+              <div key={index} className="flex items-center text-gray-600">
+                <div 
+                  className="w-2 h-2 bg-green-600 rounded-full mr-3 animate-pulse" 
+                  style={{ animationDelay: `${index * 0.2}s` }}
                 ></div>
-                <span className="text-sm text-gray-700">{opening.name}</span>
+                <span>{step}</span>
               </div>
-              <span className="font-semibold text-gray-900">{opening.value}</span>
-            </div>
-          ))}
+            ))}
+          </div>
+
+          <p className="mt-8 text-sm text-gray-500">
+            This may take {mode === 'user' ? '1-3 minutes' : '30-60 seconds'}. Please don't close this page.
+          </p>
         </div>
       </div>
     </div>
   )
 }
 
-export default OpeningsChart
+export default LoadingScreen
