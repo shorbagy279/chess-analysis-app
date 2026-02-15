@@ -11,7 +11,7 @@ backend/.settings/
 backend/.classpath
 backend/.project
 backend/application-local.properties
-
+backend/src/main/resources/application.properties
 # Frontend
 frontend/node_modules/
 frontend/dist/
